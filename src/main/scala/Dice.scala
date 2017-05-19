@@ -1,27 +1,27 @@
 import java.io.Closeable
 import java.util.concurrent.TimeUnit
 
-import org.apache.bookkeeper.client.{BKException, BookKeeper}
+import org.apache.bookkeeper.client.{BKException, BookKeeper, LedgerHandle}
 import org.apache.bookkeeper.conf.ClientConfiguration
 import org.apache.curator.framework.{CuratorFramework, CuratorFrameworkFactory}
 import org.apache.curator.framework.recipes.leader.{LeaderSelector, LeaderSelectorListenerAdapter}
 import org.apache.curator.retry.ExponentialBackoffRetry
-import org.apache.curator.test.TestingServer
-import org.apache.zookeeper.{CreateMode, KeeperException}
+import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.data.Stat
 
 import scala.annotation.tailrec
+import Dice._
+import org.apache.bookkeeper.client.BookKeeper.DigestType
+
+import scala.util.Try
 
 class Dice
   extends LeaderSelectorListenerAdapter
     with Closeable
 {
-  private val zkServer = new TestingServer(true)
-
-  println(zkServer.getConnectString)
   private val client = {
     val connection = CuratorFrameworkFactory.builder()
-      .connectString(zkServer.getConnectString)
+      .connectString(s"127.0.0.1:${ZookeeperServerStartup.port}")
       .sessionTimeoutMs(2000)
       .connectionTimeoutMs(5000)
       .retryPolicy(new ExponentialBackoffRetry(1000, 3))
@@ -43,77 +43,59 @@ class Dice
 
   private val bookKeeper = {
     val configuration = new ClientConfiguration()
-      .setZkServers(zkServer.getConnectString)
+      .setZkServers(s"127.0.0.1:${ZookeeperServerStartup.port}")
       .setZkTimeout(30000)
 
-    client.create()
-      .creatingParentsIfNeeded()
-      .withMode(CreateMode.PERSISTENT)
-      .forPath("/ledgers/available", Array.emptyByteArray)
-    configuration.setZkLedgersRootPath("/ledgers")
+//    client.create()
+//      .creatingParentsIfNeeded()
+//      .withMode(CreateMode.PERSISTENT)
+//      .forPath("/ledgers/available", Array.emptyByteArray)
+//    configuration.setZkLedgersRootPath("/ledgers")
 
     new BookKeeper(configuration)
   }
 
-  private val rand = scala.util.Random
-  private def bytesToLongsArray(bytes: Array[Byte]) = {
-    java.nio.ByteBuffer
-      .wrap(bytes)
-      .asLongBuffer()
-      .array()
-  }
 
-  def initLedgers: (Array[Long], Stat, Boolean) = {
+  private def retrieveAllLedgersFromZkServer(path: String): LedgersWithMetadataInformation = {
+    val zNodeMetadata: Stat = new Stat()
     scala.util.Try {
-      val stat: Stat = new Stat()
-      val ledgerListBytes = client.getData
-        .storingStatIn(stat)
-        .forPath(Dice.DICE_LOG)
+      val binaryData = client.getData
+        .storingStatIn(zNodeMetadata)
+        .forPath(path)
+      val ledgers = bytesToLongsArray(binaryData)
 
-      (bytesToLongsArray(ledgerListBytes), stat)
+      ledgers
     } match {
-      case scala.util.Success((ledgers, stat)) =>
-        (ledgers, stat ,false)
+      case scala.util.Success(ledgers) =>
+        LedgersWithMetadataInformation(ledgers, zNodeMetadata, mustCreate = false)
       case scala.util.Failure(throwable) => throwable match {
         case _: KeeperException.NoNodeException =>
-          (Array.emptyLongArray, new Stat(), true)
-        case _ => throw throwable
+          LedgersWithMetadataInformation(Array.emptyLongArray, zNodeMetadata, mustCreate = true)
+        case _ =>
+          throw throwable
       }
     }
   }
 
-  private def bytesToIntsArray(bytes: Array[Byte]) = {
-    java.nio.ByteBuffer
-      .wrap(bytes)
-      .asIntBuffer()
-      .array()
-  }
+  private def processNewLedgersThatHaventSeenBefore(leadgers: Array[Long],
+                                                    skipPast: EntryId) = {
+    if (skipPast.ledgerId != noLeadgerId)
+      leadgers.takeRight(leadgers.indexOf(skipPast.ledgerId))
+    else
+      leadgers
+  }.toStream
 
-  private def longArrayToBytes(longs: Array[Long]): Array[Byte] = {
-    val buffer = java.nio.ByteBuffer.allocate(
-      longs.length * java.lang.Long.BYTES
-    )
-    longs.foreach(longValue => buffer.putLong(longValue))
-    buffer.array()
-  }
 
-  def lead(skipPast: EntryId): EntryId = {
-    val (ledgerIDs, stat, mustCreate) = initLedgers
-
-    val toRead = {
-      if (skipPast.ledgerId != -1)
-        ledgerIDs.takeRight(ledgerIDs.indexOf(skipPast.ledgerId))
-      else
-        Array.emptyLongArray
-    }.toStream
-
-    val ledgersHandlerToDisplay = toRead
-      .map(leadgerID =>
+  private def openLedgersHandlers(ledgers: Stream[Long],
+                                  digestType: DigestType,
+                                  password: Array[Byte]) = {
+    ledgers
+      .map(ledgerID =>
         scala.util.Try(
           bookKeeper.openLedger(
-            leadgerID,
-            BookKeeper.DigestType.MAC,
-            Dice.DICE_PASSWORD
+            ledgerID,
+            digestType,
+            password
           )))
       .takeWhile {
         case scala.util.Success(_) => true
@@ -121,31 +103,66 @@ class Dice
           case _: BKException.BKLedgerRecoveryException => false
           case _: Throwable => throw throwable
         }
-      }.toArray
-
-    var lastDisplayedEntry = skipPast
-    val nextEntry = EntryId(skipPast.ledgerId, skipPast.entryId + 1)
-    ledgersHandlerToDisplay.foreach { case (tryOpenLedgerHandle) =>
-      val ledgeHanlder = tryOpenLedgerHandle.get
-      if (nextEntry.entryId > ledgeHanlder.getLastAddConfirmed) {
-        lastDisplayedEntry = EntryId(skipPast.ledgerId, 0)
-      } else {
-        val entries = ledgeHanlder.readEntries(
-          nextEntry.entryId,
-          ledgeHanlder.getLastAddConfirmed
-        )
-        while (entries.hasMoreElements) {
-          val entry = entries.nextElement
-          val entryData = entry.getEntry
-          println(s"" +
-            s"Value = ${bytesToIntsArray(entryData)}, " +
-            s"epoch = ${ledgeHanlder.getId}, " +
-            "catchup"
-          )
-          lastDisplayedEntry = EntryId(ledgeHanlder.getId, entry.getEntryId)
-        }
       }
+      .map(_.get).toArray
+  }
+
+  @tailrec
+  private def traverseLedgersRecords(ledgerHandlers: List[LedgerHandle],
+                             nextEntry: EntryId,
+                             lastDisplayedEntry: EntryId
+                            ): EntryId =
+    ledgerHandlers match {
+      case Nil =>
+        lastDisplayedEntry
+
+      case ledgeHandle :: handles =>
+        if (nextEntry.entryId > ledgeHandle.getLastAddConfirmed) {
+          val startEntry = nextEntry.copy(ledgeHandle.getId, 0)
+          traverseLedgersRecords(handles, startEntry, lastDisplayedEntry)
+        }
+        else {
+          val entries = ledgeHandle.readEntries(
+            nextEntry.entryId,
+            ledgeHandle.getLastAddConfirmed
+          )
+
+          var newLastDisplayedEntry = lastDisplayedEntry
+          while (entries.hasMoreElements) {
+            val entry = entries.nextElement
+            val entryData = entry.getEntry
+            println(s"" +
+              s"Value = ${bytesToIntsArray(entryData)}, " +
+              s"epoch = ${ledgeHandle.getId}, " +
+              "catchup"
+            )
+            newLastDisplayedEntry = EntryId(ledgeHandle.getId, entry.getEntryId)
+          }
+          traverseLedgersRecords(handles, nextEntry, newLastDisplayedEntry)
+        }
     }
+
+
+  private val rand = scala.util.Random
+  def lead(skipPast: EntryId): EntryId = {
+    val ledgersWithMetadataInformation =
+      retrieveAllLedgersFromZkServer(Dice.DICE_LOG)
+
+    val (ledgerIDs, stat, mustCreate) = (
+      ledgersWithMetadataInformation.ledgers,
+      ledgersWithMetadataInformation.zNodeMetadata,
+      ledgersWithMetadataInformation.mustCreate
+    )
+
+    val newLedgers: Stream[Long] =
+      processNewLedgersThatHaventSeenBefore(ledgerIDs, skipPast)
+
+    val newLedgerHandles: List[LedgerHandle] =
+      openLedgersHandlers(newLedgers, BookKeeper.DigestType.MAC,  Dice.DICE_PASSWORD)
+        .toList
+
+    val lastDisplayedEntry: EntryId =
+      traverseLedgersRecords(newLedgerHandles, EntryId(skipPast.ledgerId, skipPast.entryId + 1), skipPast)
 
     val ensembleNumber = 3
     val writeQourumNumber = 3
@@ -206,8 +223,10 @@ class Dice
   @tailrec
   private final def ledgersIDs(entryId: EntryId): Seq[Long] = {
     scala.util.Try {
+
       val ledgerListBytes = client.getData
         .forPath(Dice.DICE_LOG)
+
       val ids: Seq[Long] =
         if (entryId.ledgerId != -1) {
           bytesToLongsArray(ledgerListBytes)
@@ -217,8 +236,11 @@ class Dice
         }
       ids
     } match {
-      case scala.util.Success(ledgersIDs) =>
-        ledgersIDs
+      case scala.util.Success(ledgersIdentifires) =>
+        if (ledgersIdentifires.isEmpty)
+          ledgersIDs(entryId)
+        else
+          ledgersIdentifires
       case scala.util.Failure(throwable) => throwable match {
         case _: KeeperException.NoNodeException =>
           Thread.sleep(1000)
@@ -329,6 +351,7 @@ class Dice
     while (true) {
       if (leaderSelector.hasLeadership) {
         lastDisplayedEntry = lead(lastDisplayedEntry)
+
       } else {
         lastDisplayedEntry = follow(lastDisplayedEntry)
       }
@@ -352,13 +375,47 @@ class Dice
 
   override def close(): Unit = {
     bookKeeper.close()
-    leaderSelector.close()
+//    leaderSelector.close()
     client.close()
-    zkServer.close()
+//    zkServer.close()
   }
 }
 
 private object Dice{
+  val noLeadgerId = -1
+
+  def bytesToLongsArray(bytes: Array[Byte]): Array[Long] = {
+    val buffer = java.nio.ByteBuffer
+      .wrap(bytes)
+      .asLongBuffer()
+
+    val size = buffer.limit() / java.lang.Long.BYTES
+    val longs = {
+      val array = Array[Long](size)
+      buffer.get(array)
+      array
+    }
+    longs
+  }
+
+
+  def longArrayToBytes(longs: Array[Long]): Array[Byte] = {
+    val buffer = java.nio.ByteBuffer.allocate(
+      longs.length * java.lang.Long.BYTES
+    )
+    longs.foreach(longValue => buffer.putLong(longValue))
+    buffer.array()
+  }
+
+  def bytesToIntsArray(bytes: Array[Byte]): Array[Int] = {
+    java.nio.ByteBuffer
+      .wrap(bytes)
+      .asIntBuffer()
+      .array()
+  }
+
+
+
   val ELECTION_PATH: String = "/dice-elect"
   val DICE_PASSWORD: Array[Byte] = "dice".getBytes
   val DICE_LOG: String = "/dice-log"

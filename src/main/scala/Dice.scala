@@ -10,8 +10,10 @@ import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.data.Stat
 
 import scala.annotation.tailrec
-import Dice._
 import org.apache.bookkeeper.client.BookKeeper.DigestType
+
+import Dice._
+import Utils._
 
 
 class Dice
@@ -81,7 +83,7 @@ class Dice
       ledgers.takeRight(ledgers.indexOf(skipPast.ledgerId))
     else
       ledgers
-  }.toStream
+  }
 
 
   private def openLedgersHandlers(ledgers: Stream[Long],
@@ -189,8 +191,8 @@ class Dice
   }
 
   private final def whileLeaderDo(ledgerHandle: LedgerHandle,
-                            onBeingLeaderDo: LedgerHandle => Unit
-                           ) = {
+                                  onBeingLeaderDo: LedgerHandle => Unit
+                                 ) = {
     try {
       while (leaderSelector.hasLeadership) {
         onBeingLeaderDo(ledgerHandle)
@@ -201,6 +203,7 @@ class Dice
   }
 
   private val rand = scala.util.Random
+
   private def onBeingLeaderDo(ledgerHandle: LedgerHandle) = {
     Thread.sleep(1000)
     val nextInt = rand.nextInt(6) + 1
@@ -226,6 +229,7 @@ class Dice
 
     val newLedgers: Stream[Long] =
       processNewLedgersThatHaventSeenBefore(ledgerIDs, skipPast)
+        .toStream
 
     val newLedgerHandles: List[LedgerHandle] =
       openLedgersHandlers(newLedgers, BookKeeper.DigestType.MAC, Dice.DICE_PASSWORD)
@@ -236,12 +240,12 @@ class Dice
 
 
     val ensembleNumber = 3
-    val writeQourumNumber = 3
-    val ackQourumNumber = 2
+    val writeQuorumNumber = 3
+    val ackQuorumNumber = 2
     val ledgerHandle = ledgerHandleToWrite(
       ensembleNumber,
-      writeQourumNumber,
-      ackQourumNumber,
+      writeQuorumNumber,
+      ackQuorumNumber,
       BookKeeper.DigestType.MAC,
       Dice.DICE_PASSWORD
     )
@@ -259,122 +263,109 @@ class Dice
   }
 
 
-
   @tailrec
-  private final def ledgersIDs(entryId: EntryId): Seq[Long] = {
+  private final def retrieveLedgersUntilNodeDoesntExist(path: String,
+                                                        lastLedgerAndItsLastRecordSeen: EntryId
+                                                       ): Array[Long] = {
     scala.util.Try {
+      val ledgerIDsBinary = client.getData
+        .forPath(path)
 
-      val ledgerListBytes = client.getData
-        .forPath(Dice.DICE_LOG)
+      val ledgers = bytesToLongsArray(ledgerIDsBinary)
 
-      val ids: Seq[Long] =
-        if (entryId.ledgerId != -1) {
-          bytesToLongsArray(ledgerListBytes)
-            .takeRight(ledgerListBytes.indexOf(entryId.ledgerId))
-        } else {
-          Seq.empty[Long]
-        }
-      ids
+      processNewLedgersThatHaventSeenBefore(ledgers, lastLedgerAndItsLastRecordSeen)
     } match {
-      case scala.util.Success(ledgersIdentifires) =>
-        if (ledgersIdentifires.isEmpty)
-          ledgersIDs(entryId)
-        else
-          ledgersIdentifires
+      case scala.util.Success(ledgers) =>
+        ledgers
       case scala.util.Failure(throwable) => throwable match {
         case _: KeeperException.NoNodeException =>
           Thread.sleep(1000)
-          ledgersIDs(entryId)
+          retrieveLedgersUntilNodeDoesntExist(path, lastLedgerAndItsLastRecordSeen)
         case _ =>
           throw throwable
       }
     }
   }
 
-  private def readUntilClosed(ledgerIDs: Seq[Long], lastReadEntry: EntryId): EntryId = {
-    @tailrec
-    def go(ids: Seq[Long],
-           isClosed: Boolean,
-           nextEntry: EntryId,
-           lastReadEntry: EntryId
-          ): EntryId = {
-      if (ids.isEmpty) {
-        lastReadEntry
-      }
-      else if (isClosed || leaderSelector.hasLeadership) {
-        go(
-          ids.tail,
-          isClosed = false,
-          EntryId(nextEntry.ledgerId, entryId = 0L),
-          lastReadEntry
-        )
-      }
-      else {
-        val currentHandle = ids.head
-        val nextEntry_rename =
-          if (lastReadEntry.ledgerId == currentHandle)
-            nextEntry.copy(entryId = lastReadEntry.entryId + 1)
-          else
-            nextEntry
+  @tailrec
+  private final def monitorLedgerUntilItIsCompleted(ledger: Long,
+                                                    lastLedgerAndItsLastRecordSeen: EntryId,
+                                                    recordToReadToStartWith: Long,
+                                                    isLedgerCompleted: Boolean
+                                                   ): EntryId = {
+    if (isLedgerCompleted || leaderSelector.hasLeadership) {
+      lastLedgerAndItsLastRecordSeen
+    } else {
+      val ledgerHandle = bookKeeper.openLedgerNoRecovery(
+        ledger,
+        BookKeeper.DigestType.MAC,
+        Dice.DICE_PASSWORD
+      )
 
-        val isClosed_rename = bookKeeper.isClosed(currentHandle)
-        val ledgerHandle = bookKeeper.openLedgerNoRecovery(
-          currentHandle,
-          BookKeeper.DigestType.MAC,
-          Dice.DICE_PASSWORD
+      val isLedgerCompleted = bookKeeper.isClosed(ledger)
+      val nextRecord = ledgerHandle.getLastAddConfirmed + 1
+      
+      var updatedLastLedgerAndItsLastRecordSeen = lastLedgerAndItsLastRecordSeen
+      if (recordToReadToStartWith <= ledgerHandle.getLastAddConfirmed) {
+        val entries = ledgerHandle.readEntries(
+          recordToReadToStartWith,
+          ledgerHandle.getLastAddConfirmed
         )
 
-        var lastReadEntry_rename = lastReadEntry
-        if (nextEntry_rename.entryId <= ledgerHandle.getLastAddConfirmed) {
-          val entries = ledgerHandle.readEntries(
-            nextEntry_rename.entryId,
-            ledgerHandle.getLastAddConfirmed
+        while (entries.hasMoreElements) {
+          val entry = entries.nextElement()
+          val entryData = entry.getEntry
+          println(
+            s"Ledger = ${ledgerHandle.getId}, " +
+              s"RecordID = ${entry.getEntryId}, " +
+              s"Value = ${bytesToIntsArray(entryData).head}, " +
+              "following"
           )
-
-          while (entries.hasMoreElements) {
-            val entry = entries.nextElement()
-            val entryData = entry.getEntry
-            println(
-              s"Value = ${bytesToIntsArray(entryData)}, " +
-                s"epoch = ${ledgerHandle.getId}, " +
-                "following"
-            )
-            lastReadEntry_rename = EntryId(currentHandle, entry.getEntryId)
-          }
+          updatedLastLedgerAndItsLastRecordSeen = EntryId(ledger, entry.getEntryId)
         }
-        Thread.sleep(1000)
-        go(
-          ids.tail,
-          isClosed_rename,
-          nextEntry_rename,
-          lastReadEntry_rename
-        )
       }
+      Thread.sleep(1000)
+      monitorLedgerUntilItIsCompleted(
+        ledger,
+        updatedLastLedgerAndItsLastRecordSeen,
+        nextRecord,
+        isLedgerCompleted
+      )
     }
+  }
 
-    go(
-      ledgerIDs,
-      isClosed = false,
-      EntryId(lastReadEntry.ledgerId, entryId = 0L),
-      lastReadEntry
+
+
+  private final def readUntilWeAreSlave(ledgers: Array[Long],
+                                  lastLedgerAndItsLastRecordSeen: EntryId
+                                 ): EntryId = {
+    ledgers.foldRight(lastLedgerAndItsLastRecordSeen)((ledger, lastLedgerAndItsLastRecordSeen) =>
+      monitorLedgerUntilItIsCompleted(ledger,
+        lastLedgerAndItsLastRecordSeen,
+        0L,
+        isLedgerCompleted = false
+      )
     )
   }
 
   @tailrec
-  private final def readNewLedgers(ledgers: Seq[Long], lastReadEntry: EntryId): EntryId = {
-    if (leaderSelector.hasLeadership) {
-      val lastReadEntry_rename = readUntilClosed(ledgers, lastReadEntry)
+  private final def retrieveUpcomingLedgers(path: String, ledgers: Array[Long], lastReadEntry: EntryId): EntryId = {
+    if (!leaderSelector.hasLeadership) {
+      val lastLedgerAndItsLastRecordSeen =
+        readUntilWeAreSlave(ledgers, lastReadEntry)
 
-      val newLedgersBinaryIDs = client.getData
-        .forPath(Dice.DICE_LOG)
+      val ledgersIDsBinary = client.getData
+        .forPath(path)
 
-      val ledgersIDs = bytesToLongsArray(newLedgersBinaryIDs)
+      val newLedgers = bytesToLongsArray(ledgersIDsBinary)
+      val upcomingLedgers = newLedgers.takeRight(
+        newLedgers.indexOf(lastLedgerAndItsLastRecordSeen.ledgerId + 1)
+      )
 
-      readNewLedgers(
-        ledgersIDs.takeRight(
-          ledgersIDs.indexOf(lastReadEntry_rename.ledgerId + 1)
-        ),
-        lastReadEntry_rename
+      retrieveUpcomingLedgers(
+        path,
+        upcomingLedgers,
+        lastLedgerAndItsLastRecordSeen
       )
     } else {
       lastReadEntry
@@ -382,8 +373,12 @@ class Dice
   }
 
   def follow(skipPast: EntryId): EntryId = {
-    val ledgers = ledgersIDs(skipPast)
-    readNewLedgers(ledgers,  skipPast)
+    val ledgers =
+      retrieveLedgersUntilNodeDoesntExist(DICE_LOG, skipPast)
+    val lastLedgerAndItsLastRecordSeen =
+      retrieveUpcomingLedgers(DICE_LOG, ledgers,  skipPast)
+
+    lastLedgerAndItsLastRecordSeen
   }
 
   def playDice(): Unit = {
@@ -417,51 +412,11 @@ class Dice
     bookKeeper.close()
 //    leaderSelector.close()
     client.close()
-//    zkServer.close()
   }
 }
 
 private object Dice{
   val noLeadgerId = -1
-
-  def bytesToLongsArray(bytes: Array[Byte]): Array[Long] = {
-    val buffer = java.nio.ByteBuffer
-      .wrap(bytes)
-      .asLongBuffer()
-
-    val size = buffer.limit() / java.lang.Long.BYTES
-    val longs = {
-      val array = Array[Long](size)
-      buffer.get(array)
-      array
-    }
-    longs
-  }
-
-
-  def longArrayToBytes(longs: Array[Long]): Array[Byte] = {
-    val buffer = java.nio.ByteBuffer.allocate(
-      longs.length * java.lang.Long.BYTES
-    )
-    longs.foreach(longValue => buffer.putLong(longValue))
-    buffer.array()
-  }
-
-  def bytesToIntsArray(bytes: Array[Byte]): Array[Int] = {
-    val buffer = java.nio.ByteBuffer
-      .wrap(bytes)
-      .asIntBuffer()
-
-    val size = buffer.limit() / java.lang.Integer.BYTES
-    val ints = {
-      val array = Array[Int](size)
-      buffer.get(array)
-      array
-    }
-    ints
-  }
-
-
 
   val ELECTION_PATH: String = "/dice-elect"
   val DICE_PASSWORD: Array[Byte] = "dice".getBytes

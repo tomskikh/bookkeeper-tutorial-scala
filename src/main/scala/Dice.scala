@@ -13,12 +13,10 @@ import scala.annotation.tailrec
 import Dice._
 import org.apache.bookkeeper.client.BookKeeper.DigestType
 
-import scala.util.Try
 
 class Dice
   extends LeaderSelectorListenerAdapter
-    with Closeable
-{
+    with Closeable {
   private val client = {
     val connection = CuratorFrameworkFactory.builder()
       .connectString(s"127.0.0.1:${ZookeeperServerStartup.port}")
@@ -46,11 +44,11 @@ class Dice
       .setZkServers(s"127.0.0.1:${ZookeeperServerStartup.port}")
       .setZkTimeout(30000)
 
-//    client.create()
-//      .creatingParentsIfNeeded()
-//      .withMode(CreateMode.PERSISTENT)
-//      .forPath("/ledgers/available", Array.emptyByteArray)
-//    configuration.setZkLedgersRootPath("/ledgers")
+    //    client.create()
+    //      .creatingParentsIfNeeded()
+    //      .withMode(CreateMode.PERSISTENT)
+    //      .forPath("/ledgers/available", Array.emptyByteArray)
+    //    configuration.setZkLedgersRootPath("/ledgers")
 
     new BookKeeper(configuration)
   }
@@ -77,12 +75,12 @@ class Dice
     }
   }
 
-  private def processNewLedgersThatHaventSeenBefore(leadgers: Array[Long],
+  private def processNewLedgersThatHaventSeenBefore(ledgers: Array[Long],
                                                     skipPast: EntryId) = {
     if (skipPast.ledgerId != noLeadgerId)
-      leadgers.takeRight(leadgers.indexOf(skipPast.ledgerId))
+      ledgers.takeRight(ledgers.indexOf(skipPast.ledgerId))
     else
-      leadgers
+      ledgers
   }.toStream
 
 
@@ -109,16 +107,16 @@ class Dice
 
   @tailrec
   private def traverseLedgersRecords(ledgerHandlers: List[LedgerHandle],
-                             nextEntry: EntryId,
-                             lastDisplayedEntry: EntryId
-                            ): EntryId =
+                                     nextEntry: EntryId,
+                                     lastDisplayedEntry: EntryId
+                                    ): EntryId =
     ledgerHandlers match {
       case Nil =>
         lastDisplayedEntry
 
       case ledgeHandle :: handles =>
         if (nextEntry.entryId > ledgeHandle.getLastAddConfirmed) {
-          val startEntry = nextEntry.copy(ledgeHandle.getId, 0)
+          val startEntry = EntryId(ledgeHandle.getId, 0)
           traverseLedgersRecords(handles, startEntry, lastDisplayedEntry)
         }
         else {
@@ -132,8 +130,9 @@ class Dice
             val entry = entries.nextElement
             val entryData = entry.getEntry
             println(s"" +
-              s"Value = ${bytesToIntsArray(entryData)}, " +
-              s"epoch = ${ledgeHandle.getId}, " +
+              s"Ledger = ${ledgeHandle.getId}, " +
+              s"RecordID = ${entry.getEntryId}, " +
+              s"Value = ${bytesToIntsArray(entryData).head}, " +
               "catchup"
             )
             newLastDisplayedEntry = EntryId(ledgeHandle.getId, entry.getEntryId)
@@ -142,8 +141,79 @@ class Dice
         }
     }
 
+  private def ledgerHandleToWrite(ensembleNumber: Int,
+                                  writeQuorumNumber: Int,
+                                  ackQuorumNumber: Int,
+                                  digestType: DigestType,
+                                  password: Array[Byte]
+                                 ) = {
+    bookKeeper.createLedger(
+      ensembleNumber,
+      writeQuorumNumber,
+      ackQuorumNumber,
+      digestType,
+      password
+    )
+  }
+
+
+  private def createLedgersLog(path: String,
+                               ledgersIDsBinary: Array[Byte]
+                              ) = {
+    scala.util.Try(
+      client.create.forPath(path, ledgersIDsBinary)
+    ) match {
+      case scala.util.Success(_) =>
+      case scala.util.Failure(throwable) => throwable match {
+        case _: KeeperException.NodeExistsException =>
+        case _ => throw throwable
+      }
+    }
+  }
+
+  private def updateLedgersLog(path: String,
+                               ledgersIDsBinary: Array[Byte],
+                               zNodeMetadata: Stat
+                              ) = {
+    scala.util.Try(
+      client.setData()
+        .withVersion(zNodeMetadata.getVersion)
+        .forPath(path, ledgersIDsBinary)
+    ) match {
+      case scala.util.Success(_) =>
+      case scala.util.Failure(throwable) => throwable match {
+        case _: KeeperException.BadVersionException =>
+        case _ => throw throwable
+      }
+    }
+  }
+
+  private final def whileLeaderDo(ledgerHandle: LedgerHandle,
+                            onBeingLeaderDo: LedgerHandle => Unit
+                           ) = {
+    try {
+      while (leaderSelector.hasLeadership) {
+        onBeingLeaderDo(ledgerHandle)
+      }
+    } finally {
+      ledgerHandle.close()
+    }
+  }
 
   private val rand = scala.util.Random
+  private def onBeingLeaderDo(ledgerHandle: LedgerHandle) = {
+    Thread.sleep(1000)
+    val nextInt = rand.nextInt(6) + 1
+    ledgerHandle.addEntry(
+      java.nio.ByteBuffer.allocate(4).putInt(nextInt).array()
+    )
+    println(
+      s"Value = $nextInt, " +
+        s"epoch = ${ledgerHandle.getId}, " +
+        s"isLeader = ${leaderSelector.hasLeadership}"
+    )
+  }
+
   def lead(skipPast: EntryId): EntryId = {
     val ledgersWithMetadataInformation =
       retrieveAllLedgersFromZkServer(Dice.DICE_LOG)
@@ -158,16 +228,17 @@ class Dice
       processNewLedgersThatHaventSeenBefore(ledgerIDs, skipPast)
 
     val newLedgerHandles: List[LedgerHandle] =
-      openLedgersHandlers(newLedgers, BookKeeper.DigestType.MAC,  Dice.DICE_PASSWORD)
+      openLedgersHandlers(newLedgers, BookKeeper.DigestType.MAC, Dice.DICE_PASSWORD)
         .toList
 
     val lastDisplayedEntry: EntryId =
       traverseLedgersRecords(newLedgerHandles, EntryId(skipPast.ledgerId, skipPast.entryId + 1), skipPast)
 
+
     val ensembleNumber = 3
     val writeQourumNumber = 3
     val ackQourumNumber = 2
-    val ledgerHandle = bookKeeper.createLedger(
+    val ledgerHandle = ledgerHandleToWrite(
       ensembleNumber,
       writeQourumNumber,
       ackQourumNumber,
@@ -177,48 +248,17 @@ class Dice
 
     val ledgersIDsToBytes = longArrayToBytes(ledgerIDs :+ ledgerHandle.getId)
     if (mustCreate) {
-      scala.util.Try(
-        client.create.forPath(Dice.DICE_LOG, ledgersIDsToBytes)
-      ) match {
-        case scala.util.Success(_) =>
-        case scala.util.Failure(throwable) => throwable match {
-          case _: KeeperException.NodeExistsException =>
-          case _ => throw throwable
-        }
-      }
+      createLedgersLog(Dice.DICE_LOG, ledgersIDsToBytes)
     } else {
-      scala.util.Try(
-        client.setData()
-          .withVersion(stat.getVersion)
-          .forPath(Dice.DICE_LOG, ledgersIDsToBytes)
-      ) match {
-        case scala.util.Success(_) =>
-        case scala.util.Failure(throwable) => throwable match {
-          case _: KeeperException.BadVersionException =>
-          case _ => throw throwable
-        }
-      }
+      updateLedgersLog(Dice.DICE_LOG, ledgersIDsToBytes, stat)
     }
 
-    try {
-      while (leaderSelector.hasLeadership) {
-        Thread.sleep(1000)
-        val nextInt = rand.nextInt(6) + 1
-        ledgerHandle.addEntry(
-          java.nio.ByteBuffer.allocate(4).putInt(nextInt).array()
-        )
-        println(
-          s"Value = $nextInt, " +
-            s"epoch = ${ledgerHandle.getId}, " +
-            s"isLeader = ${leaderSelector.hasLeadership}"
-        )
-      }
-    } finally {
-      ledgerHandle.close()
-    }
+    whileLeaderDo(ledgerHandle, onBeingLeaderDo)
 
     lastDisplayedEntry
   }
+
+
 
   @tailrec
   private final def ledgersIDs(entryId: EntryId): Seq[Long] = {
@@ -408,10 +448,17 @@ private object Dice{
   }
 
   def bytesToIntsArray(bytes: Array[Byte]): Array[Int] = {
-    java.nio.ByteBuffer
+    val buffer = java.nio.ByteBuffer
       .wrap(bytes)
       .asIntBuffer()
-      .array()
+
+    val size = buffer.limit() / java.lang.Integer.BYTES
+    val ints = {
+      val array = Array[Int](size)
+      buffer.get(array)
+      array
+    }
+    ints
   }
 
 

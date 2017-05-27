@@ -1,18 +1,26 @@
+package client
+
 import java.io.IOException
 import java.net.ServerSocket
 
 object Utils {
+  final val noLeadgerId: Int = -1
 
   def bytesToLongsArray(bytes: Array[Byte]): Array[Long] = {
     val buffer = java.nio.ByteBuffer
       .wrap(bytes)
       .asLongBuffer()
 
-    val size = buffer.limit() / java.lang.Long.BYTES
+    val size = buffer.limit()
     val longs = {
-      val array = Array[Long](size)
-      buffer.get(array)
-      array
+      if (size == 0) {
+        Array.emptyLongArray
+      }
+      else {
+        val array = Array[Long](size)
+        buffer.get(array)
+        array
+      }
     }
     longs
   }
@@ -31,11 +39,16 @@ object Utils {
       .wrap(bytes)
       .asIntBuffer()
 
-    val size = buffer.limit() / java.lang.Integer.BYTES
+    val size = buffer.limit()
     val ints = {
-      val array = Array[Int](size)
-      buffer.get(array)
-      array
+      if (size == 0) {
+        Array.emptyIntArray
+      }
+      else {
+        val array = Array[Int](size)
+        buffer.get(array)
+        array
+      }
     }
     ints
   }

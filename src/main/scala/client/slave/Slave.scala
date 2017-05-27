@@ -52,7 +52,7 @@ class Slave(client: CuratorFramework,
   private def processNewLedgersThatHaventSeenBefore(ledgers: Array[Long],
                                                     skipPast: EntryId) = {
     if (skipPast.ledgerId != noLeadgerId)
-      ledgers.takeRight(ledgers.indexOf(skipPast.ledgerId))
+      ledgers.filter(id => id >= skipPast.ledgerId)
     else
       ledgers
   }
@@ -124,13 +124,13 @@ class Slave(client: CuratorFramework,
       val lastLedgerAndItsLastRecordSeen =
         readUntilWeAreSlave(ledgers, lastReadEntry)
 
-
       val ledgersIDsBinary = client.getData
         .forPath(ledgerLogPath)
 
       val newLedgers = bytesToLongsArray(ledgersIDsBinary)
-      val upcomingLedgers = newLedgers.takeRight(
-        newLedgers.indexOf(lastLedgerAndItsLastRecordSeen.ledgerId + 1)
+
+      val upcomingLedgers = newLedgers.filter(id =>
+        id > lastLedgerAndItsLastRecordSeen.ledgerId
       )
 
       retrieveUpcomingLedgers(

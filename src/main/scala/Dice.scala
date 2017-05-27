@@ -8,6 +8,7 @@ import org.apache.curator.retry.ExponentialBackoffRetry
 import client.{EntryId, LeaderRole}
 import client.master.Master
 import client.slave.Slave
+import org.apache.log4j.{Level, Logger}
 
 
 class Dice
@@ -57,7 +58,6 @@ class Dice
     while (true) {
       if (leaderSelector.hasLeadership) {
         lastDisplayedEntry = master.lead(lastDisplayedEntry)
-
       } else {
         lastDisplayedEntry = slave.follow(lastDisplayedEntry)
       }
@@ -77,6 +77,7 @@ private object Dice{
   val DICE_LOG: String = "/dice-log"
 
   def main(args: Array[String]): Unit = {
+    Logger.getRootLogger.setLevel(Level.OFF)
     val dice = new Dice()
     try {
       dice.playDice()

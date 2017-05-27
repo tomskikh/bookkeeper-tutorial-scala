@@ -8,23 +8,27 @@ object Utils {
 
   def bytesToLongsArray(bytes: Array[Byte]): Array[Long] = {
     val buffer = java.nio.ByteBuffer
-      .wrap(bytes)
-      .asLongBuffer()
+      .allocate(bytes.length)
+      .put(bytes)
+    buffer.flip()
 
-    val size = buffer.limit()
-    val longs = {
-      if (size == 0) {
-        Array.emptyLongArray
-      }
-      else {
-        val array = Array[Long](size)
-        buffer.get(array)
-        array
-      }
-    }
+    val size =  bytes.length / java.lang.Long.BYTES
+    val longs = Array.fill[Long](size)(buffer.getLong)
+
     longs
   }
 
+  def bytesToIntsArray(bytes: Array[Byte]): Array[Int] = {
+    val buffer = java.nio.ByteBuffer
+      .allocate(bytes.length)
+      .put(bytes)
+    buffer.flip()
+
+    val size = bytes.length / java.lang.Integer.BYTES
+    val ints = Array.fill[Int](size)(buffer.getInt)
+
+    ints
+  }
 
   def longArrayToBytes(longs: Array[Long]): Array[Byte] = {
     val buffer = java.nio.ByteBuffer.allocate(
@@ -32,25 +36,6 @@ object Utils {
     )
     longs.foreach(longValue => buffer.putLong(longValue))
     buffer.array()
-  }
-
-  def bytesToIntsArray(bytes: Array[Byte]): Array[Int] = {
-    val buffer = java.nio.ByteBuffer
-      .wrap(bytes)
-      .asIntBuffer()
-
-    val size = buffer.limit()
-    val ints = {
-      if (size == 0) {
-        Array.emptyIntArray
-      }
-      else {
-        val array = Array[Int](size)
-        buffer.get(array)
-        array
-      }
-    }
-    ints
   }
 
   def getRandomPort: Int = {

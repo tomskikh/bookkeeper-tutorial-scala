@@ -13,7 +13,7 @@ import scala.annotation.tailrec
 class Master(client: CuratorFramework,
              bookKeeper: BookKeeper,
              master: ServerRole,
-             ledgerLog: String,
+             ledgerLogPath: String,
              password: Array[Byte]
             )
 {
@@ -21,9 +21,20 @@ class Master(client: CuratorFramework,
   private val writeQuorumNumber = 3
   private val ackQuorumNumber = 2
 
+  @volatile private var lastRecoveredLedger: Option[Long] = None
+  private def recoverLedger(ledgerID: Long): Unit = {
+    lastRecoveredLedger match {
+      case None =>
+        lastRecoveredLedger = Some(ledgerID)
+      case Some(lastRecoveredLedgerID) if lastRecoveredLedgerID != ledgerID =>
+        lastRecoveredLedger = Some(ledgerID)
+      case _ =>
+    }
+  }
+
   def lead(skipPast: EntryId): EntryId = {
     val ledgersWithMetadataInformation =
-      retrieveAllLedgersFromZkServer(ledgerLog)
+      retrieveAllLedgersFromZkServer
 
     val (ledgerIDs, stat, mustCreate) = (
       ledgersWithMetadataInformation.ledgers,
@@ -40,7 +51,11 @@ class Master(client: CuratorFramework,
         .toList
 
     val lastDisplayedEntry: EntryId =
-      traverseLedgersRecords(newLedgerHandles, EntryId(skipPast.ledgerId, skipPast.entryId + 1), skipPast)
+      traverseLedgersRecords(
+        newLedgerHandles,
+        EntryId(skipPast.ledgerId, skipPast.entryId + 1),
+        skipPast
+      )
 
     val ledgerHandle = ledgerHandleToWrite(
       ensembleNumber,
@@ -51,9 +66,9 @@ class Master(client: CuratorFramework,
 
     val ledgersIDsToBytes = longArrayToBytes(ledgerIDs :+ ledgerHandle.getId)
     if (mustCreate) {
-      createLedgersLog(ledgerLog, ledgersIDsToBytes)
+      createLedgersLog(ledgersIDsToBytes)
     } else {
-      updateLedgersLog(ledgerLog, ledgersIDsToBytes, stat)
+      updateLedgersLog(ledgersIDsToBytes, stat)
     }
 
     whileLeaderDo(ledgerHandle, onBeingLeaderDo)
@@ -61,12 +76,12 @@ class Master(client: CuratorFramework,
     lastDisplayedEntry
   }
 
-  private def retrieveAllLedgersFromZkServer(path: String): LedgersWithMetadataInformation = {
+  private def retrieveAllLedgersFromZkServer: LedgersWithMetadataInformation = {
     val zNodeMetadata: Stat = new Stat()
     scala.util.Try {
       val binaryData = client.getData
         .storingStatIn(zNodeMetadata)
-        .forPath(path)
+        .forPath(ledgerLogPath)
       val ledgers = bytesToLongsArray(binaryData)
 
       ledgers
@@ -84,8 +99,9 @@ class Master(client: CuratorFramework,
 
   private def processNewLedgersThatHaventSeenBefore(ledgers: Array[Long],
                                                     skipPast: EntryId) = {
-    if (skipPast.ledgerId != noLeadgerId)
-      ledgers.takeRight(ledgers.indexOf(skipPast.ledgerId))
+    if (skipPast.ledgerId != noLeadgerId) {
+      ledgers.filter{id => id >= skipPast.ledgerId}
+    }
     else
       ledgers
   }
@@ -103,10 +119,13 @@ class Master(client: CuratorFramework,
             password
           )))
       .takeWhile {
-        case scala.util.Success(_) => true
+        case scala.util.Success(_) =>
+          true
         case scala.util.Failure(throwable) => throwable match {
-          case _: BKException.BKLedgerRecoveryException => false
-          case _: Throwable => throw throwable
+          case _: BKException.BKLedgerRecoveryException =>
+            false
+          case _: Throwable =>
+            throw throwable
         }
       }
       .map(_.get).toArray
@@ -163,11 +182,10 @@ class Master(client: CuratorFramework,
   }
 
 
-  private def createLedgersLog(path: String,
-                               ledgersIDsBinary: Array[Byte]
-                              ) = {
+  private def createLedgersLog(ledgersIDsBinary: Array[Byte]) =
+  {
     scala.util.Try(
-      client.create.forPath(path, ledgersIDsBinary)
+      client.create.forPath(ledgerLogPath, ledgersIDsBinary)
     ) match {
       case scala.util.Success(_) =>
       case scala.util.Failure(throwable) => throwable match {
@@ -177,19 +195,19 @@ class Master(client: CuratorFramework,
     }
   }
 
-  private def updateLedgersLog(path: String,
-                               ledgersIDsBinary: Array[Byte],
-                               zNodeMetadata: Stat
-                              ) = {
+  private def updateLedgersLog(ledgersIDsBinary: Array[Byte],
+                               zNodeMetadata: Stat) =
+  {
     scala.util.Try(
       client.setData()
         .withVersion(zNodeMetadata.getVersion)
-        .forPath(path, ledgersIDsBinary)
+        .forPath(ledgerLogPath, ledgersIDsBinary)
     ) match {
       case scala.util.Success(_) =>
       case scala.util.Failure(throwable) => throwable match {
         case _: KeeperException.BadVersionException =>
-        case _ => throw throwable
+        case _ =>
+          throw throwable
       }
     }
   }

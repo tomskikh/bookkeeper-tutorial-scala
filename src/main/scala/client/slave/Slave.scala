@@ -129,9 +129,13 @@ class Slave(client: CuratorFramework,
 
       val newLedgers = bytesToLongsArray(ledgersIDsBinary)
 
-      val upcomingLedgers = newLedgers.filter(id =>
-        id > lastLedgerAndItsLastRecordSeen.ledgerId
-      )
+
+
+      val upcomingLedgers = {
+        val index = newLedgers.indexWhere(id =>
+          id > lastLedgerAndItsLastRecordSeen.ledgerId)
+        newLedgers.slice(index, newLedgers.length)
+      }
 
       retrieveUpcomingLedgers(
         upcomingLedgers,

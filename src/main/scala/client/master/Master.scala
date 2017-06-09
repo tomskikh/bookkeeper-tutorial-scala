@@ -21,17 +21,6 @@ class Master(client: CuratorFramework,
   private val writeQuorumNumber = 3
   private val ackQuorumNumber = 2
 
-  @volatile private var lastRecoveredLedger: Option[Long] = None
-  private def recoverLedger(ledgerID: Long): Unit = {
-    lastRecoveredLedger match {
-      case None =>
-        lastRecoveredLedger = Some(ledgerID)
-      case Some(lastRecoveredLedgerID) if lastRecoveredLedgerID != ledgerID =>
-        lastRecoveredLedger = Some(ledgerID)
-      case _ =>
-    }
-  }
-
   def lead(skipPast: EntryId): EntryId = {
     val ledgersWithMetadataInformation =
       retrieveAllLedgersFromZkServer
@@ -100,7 +89,8 @@ class Master(client: CuratorFramework,
   private def processNewLedgersThatHaventSeenBefore(ledgers: Array[Long],
                                                     skipPast: EntryId) = {
     if (skipPast.ledgerId != noLeadgerId) {
-      ledgers.filter{id => id >= skipPast.ledgerId}
+      val index = ledgers.indexWhere(id => id >= skipPast.ledgerId)
+      ledgers.slice(index, ledgers.length)
     }
     else
       ledgers
@@ -128,7 +118,7 @@ class Master(client: CuratorFramework,
             throw throwable
         }
       }
-      .map(_.get).toArray
+      .map(_.get)
   }
 
   @tailrec
@@ -229,13 +219,14 @@ class Master(client: CuratorFramework,
   private def onBeingLeaderDo(ledgerHandle: LedgerHandle) = {
     Thread.sleep(1000)
     val nextInt = rand.nextInt(6) + 1
-    ledgerHandle.addEntry(
+    val recordID = ledgerHandle.addEntry(
       java.nio.ByteBuffer.allocate(4).putInt(nextInt).array()
     )
     println(
-      s"Value = $nextInt, " +
-        s"epoch = ${ledgerHandle.getId}, " +
-        s"isLeader = ${master.hasLeadership}"
+        s"Ledger = ${ledgerHandle.getId}, " +
+          s"RecordID = $recordID, " +
+          s"Value = $nextInt, " +
+          s"isLeader = ${master.hasLeadership}"
     )
   }
 }

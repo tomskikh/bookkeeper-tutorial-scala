@@ -8,6 +8,7 @@ import org.apache.curator.retry.ExponentialBackoffRetry
 import client.{EntryId, LeaderRole}
 import client.master.Master
 import client.slave.Slave
+import org.apache.bookkeeper.meta.{FlatLedgerManagerFactory, HierarchicalLedgerManagerFactory}
 import org.apache.log4j.{Level, Logger}
 
 
@@ -34,6 +35,11 @@ class Dice
     val configuration = new ClientConfiguration()
       .setZkServers(s"127.0.0.1:${ZookeeperServerStartup.port}")
       .setZkTimeout(30000)
+
+    configuration.setLedgerManagerFactoryClass(
+      classOf[FlatLedgerManagerFactory]
+    )
+
     new BookKeeper(configuration)
   }
 

@@ -40,7 +40,6 @@ object ZookeeperServerStartup {
       .forPath(BookieServerStartup.zkBookiesAvailablePath)
 
     zkClient.close()
-
   }
 }
 

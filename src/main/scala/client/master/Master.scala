@@ -14,9 +14,7 @@ class Master(client: CuratorFramework,
              bookKeeper: BookKeeper,
              master: ServerRole,
              ledgerLogPath: String,
-             password: Array[Byte]
-            )
-{
+             password: Array[Byte]) {
   private val ensembleNumber = 3
   private val writeQuorumNumber = 3
   private val ackQuorumNumber = 2
@@ -25,9 +23,9 @@ class Master(client: CuratorFramework,
     val ledgersWithMetadataInformation =
       retrieveAllLedgersFromZkServer
 
-    val (ledgerIDs, stat, mustCreate) = (
+    val (ledgerIDs, stat, create) = (
       ledgersWithMetadataInformation.ledgers,
-      ledgersWithMetadataInformation.zNodeMetadata,
+      ledgersWithMetadataInformation.stat,
       ledgersWithMetadataInformation.mustCreate
     )
 
@@ -54,7 +52,7 @@ class Master(client: CuratorFramework,
     )
 
     val ledgersIDsToBytes = longArrayToBytes(ledgerIDs :+ ledgerHandle.getId)
-    if (mustCreate) {
+    if (create) {
       createLedgersLog(ledgersIDsToBytes)
     } else {
       updateLedgersLog(ledgersIDsToBytes, stat)
@@ -65,7 +63,7 @@ class Master(client: CuratorFramework,
     lastDisplayedEntry
   }
 
-  private def retrieveAllLedgersFromZkServer: LedgersWithMetadataInformation = {
+  private def retrieveAllLedgersFromZkServer: LedgerMetadata = {
     val zNodeMetadata: Stat = new Stat()
     scala.util.Try {
       val binaryData = client.getData
@@ -76,10 +74,10 @@ class Master(client: CuratorFramework,
       ledgers
     } match {
       case scala.util.Success(ledgers) =>
-        LedgersWithMetadataInformation(ledgers, zNodeMetadata, mustCreate = false)
+        LedgerMetadata(ledgers, zNodeMetadata, mustCreate = false)
       case scala.util.Failure(throwable) => throwable match {
         case _: KeeperException.NoNodeException =>
-          LedgersWithMetadataInformation(Array.emptyLongArray, zNodeMetadata, mustCreate = true)
+          LedgerMetadata(Array.emptyLongArray, zNodeMetadata, mustCreate = true)
         case _ =>
           throw throwable
       }
@@ -160,8 +158,7 @@ class Master(client: CuratorFramework,
   private def ledgerHandleToWrite(ensembleNumber: Int,
                                   writeQuorumNumber: Int,
                                   ackQuorumNumber: Int,
-                                  digestType: DigestType
-                                 ) = {
+                                  digestType: DigestType) = {
     bookKeeper.createLedger(
       ensembleNumber,
       writeQuorumNumber,
@@ -172,8 +169,7 @@ class Master(client: CuratorFramework,
   }
 
 
-  private def createLedgersLog(ledgersIDsBinary: Array[Byte]) =
-  {
+  private def createLedgersLog(ledgersIDsBinary: Array[Byte]) = {
     scala.util.Try(
       client.create.forPath(ledgerLogPath, ledgersIDsBinary)
     ) match {
@@ -186,11 +182,10 @@ class Master(client: CuratorFramework,
   }
 
   private def updateLedgersLog(ledgersIDsBinary: Array[Byte],
-                               zNodeMetadata: Stat) =
-  {
+                               stat: Stat) = {
     scala.util.Try(
       client.setData()
-        .withVersion(zNodeMetadata.getVersion)
+        .withVersion(stat.getVersion)
         .forPath(ledgerLogPath, ledgersIDsBinary)
     ) match {
       case scala.util.Success(_) =>
@@ -204,8 +199,7 @@ class Master(client: CuratorFramework,
 
 
   private final def whileLeaderDo(ledgerHandle: LedgerHandle,
-                                  onBeingLeaderDo: LedgerHandle => Unit
-                                 ) = {
+                                  onBeingLeaderDo: LedgerHandle => Unit) = {
     try {
       while (master.hasLeadership) {
         onBeingLeaderDo(ledgerHandle)
@@ -216,6 +210,7 @@ class Master(client: CuratorFramework,
   }
 
   private val rand = scala.util.Random
+
   private def onBeingLeaderDo(ledgerHandle: LedgerHandle) = {
     Thread.sleep(1000)
     val nextInt = rand.nextInt(6) + 1
@@ -223,10 +218,10 @@ class Master(client: CuratorFramework,
       java.nio.ByteBuffer.allocate(4).putInt(nextInt).array()
     )
     println(
-        s"Ledger = ${ledgerHandle.getId}, " +
-          s"RecordID = $recordID, " +
-          s"Value = $nextInt, " +
-          s"isLeader = ${master.hasLeadership}"
+      s"Ledger = ${ledgerHandle.getId}, " +
+        s"RecordID = $recordID, " +
+        s"Value = $nextInt, " +
+        s"isLeader = ${master.hasLeadership}"
     )
   }
 }

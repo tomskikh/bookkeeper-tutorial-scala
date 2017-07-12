@@ -1,6 +1,5 @@
 package client
 
-import java.io.IOException
 import java.net.ServerSocket
 
 object Utils {
@@ -47,7 +46,7 @@ object Utils {
     } match {
       case scala.util.Success(port) =>
         port
-      case scala.util.Failure(throwable: IOException) =>
+      case scala.util.Failure(throwable: Throwable) =>
         throw throwable
     }
   }

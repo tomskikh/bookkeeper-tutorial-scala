@@ -14,11 +14,7 @@ object BookieServerStartup {
     val bookieFolder =
       new File(s"/tmp/bookie${System.currentTimeMillis()}", "current")
 
-    val bookieCurrent =
-      new File(bookieFolder.getPath, "current")
-
     bookieFolder.mkdir()
-    bookieCurrent.mkdir()
 
     bookieFolder.getPath
   }

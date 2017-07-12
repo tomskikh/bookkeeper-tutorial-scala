@@ -1,16 +1,20 @@
 package client
 
 import org.apache.curator.framework.CuratorFramework
-import org.apache.curator.framework.recipes.leader.{LeaderSelector, LeaderSelectorListenerAdapter}
+import org.apache.curator.framework.recipes.leader.LeaderSelectorListenerAdapter
 
-class LeaderRole(client: CuratorFramework,
-                 electionPath: String
-                )
+class LeaderSelector(client: CuratorFramework,
+                     electionPath: String)
   extends LeaderSelectorListenerAdapter
-   with ServerRole
-{
+    with ServerRole {
+
   private val leaderSelector = {
-    val leader = new LeaderSelector(client, electionPath, this)
+    val leader =
+      new org.apache.curator.framework.recipes.leader.LeaderSelector(
+        client,
+        electionPath,
+        this
+      )
     leader.autoRequeue()
     leader.start()
 
@@ -24,7 +28,7 @@ class LeaderRole(client: CuratorFramework,
     this.synchronized {
       println("Becoming leader")
       try {
-        while(true) this.wait()
+        while (true) this.wait()
       }
       catch {
         case _: InterruptedException =>

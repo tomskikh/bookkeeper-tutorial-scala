@@ -1,20 +1,19 @@
 import java.io.Closeable
 import java.util.concurrent.TimeUnit
 
-import org.apache.bookkeeper.client.BookKeeper
-import org.apache.bookkeeper.conf.ClientConfiguration
-import org.apache.curator.framework.{CuratorFramework, CuratorFrameworkFactory}
-import org.apache.curator.retry.ExponentialBackoffRetry
-import client.{EntryId, LeaderRole}
 import client.master.Master
 import client.slave.Slave
-import org.apache.bookkeeper.meta.{FlatLedgerManagerFactory, HierarchicalLedgerManagerFactory}
+import client.{EntryId, LeaderSelector}
+import org.apache.bookkeeper.client.BookKeeper
+import org.apache.bookkeeper.conf.ClientConfiguration
+import org.apache.bookkeeper.meta.FlatLedgerManagerFactory
+import org.apache.curator.framework.{CuratorFramework, CuratorFrameworkFactory}
+import org.apache.curator.retry.ExponentialBackoffRetry
 import org.apache.log4j.{Level, Logger}
 
 
 class Dice
-  extends Closeable
-{
+  extends Closeable {
 
   private val client: CuratorFramework = {
     val connection = CuratorFrameworkFactory.builder()
@@ -29,7 +28,7 @@ class Dice
     connection
   }
 
-  private val leaderSelector = new LeaderRole(client, Dice.ELECTION_PATH)
+  private val leaderSelector = new LeaderSelector(client, Dice.ELECTION_PATH)
 
   private val bookKeeper: BookKeeper = {
     val configuration = new ClientConfiguration()
@@ -77,7 +76,7 @@ class Dice
   }
 }
 
-private object Dice{
+private object Dice {
   val ELECTION_PATH: String = "/dice-elect"
   val DICE_PASSWORD: Array[Byte] = "dice".getBytes
   val DICE_LOG: String = "/dice-log"

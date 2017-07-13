@@ -6,7 +6,7 @@ import org.apache.curator.framework.recipes.leader.LeaderSelectorListenerAdapter
 class LeaderSelector(client: CuratorFramework,
                      electionPath: String)
   extends LeaderSelectorListenerAdapter
-    with ServerRole {
+    with LeaderElectionMember {
 
   private val leaderSelector = {
     val leader =

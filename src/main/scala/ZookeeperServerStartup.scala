@@ -15,6 +15,12 @@ object ZookeeperServerStartup {
   def main(args: Array[String]): Unit = {
     val zkServer = new TestingServer(port, true)
 
+    createNodes()
+
+    addShutdownHook(zkServer)
+  }
+
+  private def createNodes() = {
     val zkClient: CuratorFramework = {
       val connection = CuratorFrameworkFactory.builder()
         .connectString(endpoints)
@@ -40,6 +46,14 @@ object ZookeeperServerStartup {
       .forPath(BookieServerStartup.zkBookiesAvailablePath)
 
     zkClient.close()
+  }
+
+  private def addShutdownHook(zkServer: TestingServer) = {
+    Runtime.getRuntime.addShutdownHook(new Thread() {
+      override def run(): Unit = {
+        zkServer.close()
+      }
+    })
   }
 }
 

@@ -1,6 +1,6 @@
 package client
 
 
-trait ServerRole {
+trait LeaderElectionMember {
   def hasLeadership: Boolean
 }

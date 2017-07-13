@@ -3,14 +3,14 @@ package client.slave
 import org.apache.bookkeeper.client.BookKeeper
 import org.apache.curator.framework.CuratorFramework
 import org.apache.zookeeper.KeeperException
-import client.{EntryId, ServerRole}
+import client.{EntryId, LeaderElectionMember}
 import client.Utils._
 
 import scala.annotation.tailrec
 
 class Slave(client: CuratorFramework,
             bookKeeper: BookKeeper,
-            slave: ServerRole,
+            slave: LeaderElectionMember,
             ledgerLogPath: String,
             password: Array[Byte]
            )

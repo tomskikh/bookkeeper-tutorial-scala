@@ -1,18 +1,18 @@
 package client.master
 
+import client.Utils._
+import client.{EntryId, LeaderElectionMember}
 import org.apache.bookkeeper.client.BookKeeper.DigestType
 import org.apache.bookkeeper.client.{BKException, BookKeeper, LedgerHandle}
 import org.apache.curator.framework.CuratorFramework
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.data.Stat
-import client.{EntryId, ServerRole}
-import client.Utils._
 
 import scala.annotation.tailrec
 
 class Master(client: CuratorFramework,
              bookKeeper: BookKeeper,
-             master: ServerRole,
+             master: LeaderElectionMember,
              ledgerLogPath: String,
              password: Array[Byte]) {
   private val ensembleNumber = 3
@@ -20,13 +20,12 @@ class Master(client: CuratorFramework,
   private val ackQuorumNumber = 2
 
   def lead(skipPast: EntryId): EntryId = {
-    val ledgersWithMetadataInformation =
-      retrieveAllLedgersFromZkServer
+    val ledgerMetadata = retrieveLedgers
 
-    val (ledgerIDs, stat, create) = (
-      ledgersWithMetadataInformation.ledgers,
-      ledgersWithMetadataInformation.stat,
-      ledgersWithMetadataInformation.mustCreate
+    val (ledgerIDs, stat, mustCreate) = (
+      ledgerMetadata.ledgers,
+      ledgerMetadata.stat,
+      ledgerMetadata.mustCreate
     )
 
     val newLedgers: Stream[Long] =
@@ -52,7 +51,7 @@ class Master(client: CuratorFramework,
     )
 
     val ledgersIDsToBytes = longArrayToBytes(ledgerIDs :+ ledgerHandle.getId)
-    if (create) {
+    if (mustCreate) {
       createLedgersLog(ledgersIDsToBytes)
     } else {
       updateLedgersLog(ledgersIDsToBytes, stat)
@@ -63,7 +62,7 @@ class Master(client: CuratorFramework,
     lastDisplayedEntry
   }
 
-  private def retrieveAllLedgersFromZkServer: LedgerMetadata = {
+  private def retrieveLedgers: LedgerMetadata = {
     val zNodeMetadata: Stat = new Stat()
     scala.util.Try {
       val binaryData = client.getData

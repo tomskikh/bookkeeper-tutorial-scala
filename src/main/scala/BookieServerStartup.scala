@@ -4,6 +4,7 @@ import client.Utils
 import org.apache.bookkeeper.conf.ServerConfiguration
 import org.apache.bookkeeper.meta.FlatLedgerManagerFactory
 import org.apache.bookkeeper.proto.BookieServer
+import org.apache.commons.io.FileUtils
 
 object BookieServerStartup {
   val localBookKeeperNumber = 5
@@ -12,7 +13,7 @@ object BookieServerStartup {
 
   private def createBookieFolder(prefix: String) = {
     val bookieFolder =
-      new File(s"/tmp/bookie${System.currentTimeMillis()}", "current")
+      new File(s"/tmp/bookie$prefix", "current")
 
     bookieFolder.mkdir()
 
@@ -20,7 +21,7 @@ object BookieServerStartup {
   }
 
 
-  final def startBookie(bookieNumber: Int): Unit = {
+  final def startBookie(bookieNumber: Int): (BookieServer, String) = {
     val bookieFolder = createBookieFolder(Integer.toString(bookieNumber))
 
     val serverConfig = new ServerConfiguration()
@@ -36,10 +37,24 @@ object BookieServerStartup {
 
     val server = new BookieServer(serverConfig)
     server.start()
+
+    (server, bookieFolder)
+  }
+
+  private def addShutdownHook(servers: Seq[BookieServer], folders: Seq[String]) = {
+    Runtime.getRuntime.addShutdownHook(new Thread() {
+      override def run(): Unit = {
+        servers.foreach(_.shutdown())
+
+        folders.foreach(x => FileUtils.deleteDirectory(new File(x).getParentFile))
+      }
+    })
   }
 
   def main(args: Array[String]): Unit = {
-    0 until localBookKeeperNumber foreach startBookie
+    val (servers, folders) = (0 until localBookKeeperNumber map startBookie).unzip
+
+    addShutdownHook(servers, folders)
   }
 }
 

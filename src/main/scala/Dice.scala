@@ -2,7 +2,6 @@ import java.io.Closeable
 import java.util.concurrent.TimeUnit
 
 import client.master.Master
-import client.slave.Slave
 import client.{EntryId, LeaderSelector}
 import org.apache.bookkeeper.client.BookKeeper
 import org.apache.bookkeeper.conf.ClientConfiguration
@@ -12,8 +11,12 @@ import org.apache.curator.retry.ExponentialBackoffRetry
 import org.apache.log4j.{Level, Logger}
 
 
-class Dice
-  extends Closeable {
+class Dice(ensembleNumber: Int = 3,
+           writeQuorumNumber: Int = 3,
+           ackQuorumNumber: Int = 2,
+           isSync: Boolean = true,
+           from: Int = 1000,
+           to: Int = 1020) extends Closeable {
 
   private val client: CuratorFramework = {
     val connection = CuratorFrameworkFactory.builder()
@@ -47,25 +50,18 @@ class Dice
     bookKeeper,
     leaderSelector,
     Dice.DICE_LOG,
-    Dice.DICE_PASSWORD
-  )
-
-  private val slave = new Slave(
-    client,
-    bookKeeper,
-    leaderSelector,
-    Dice.DICE_LOG,
-    Dice.DICE_PASSWORD
-  )
+    Dice.DICE_PASSWORD,
+    ensembleNumber = ensembleNumber,
+    writeQuorumNumber = writeQuorumNumber,
+    ackQuorumNumber = ackQuorumNumber,
+    isSync = isSync,
+    to = to)
 
   def playDice(): Unit = {
     var lastDisplayedEntry = EntryId(-1L, -1L)
-    while (true) {
-      if (leaderSelector.hasLeadership) {
+    while (!master.isDone.get()) {
+      if (leaderSelector.hasLeadership)
         lastDisplayedEntry = master.lead(lastDisplayedEntry)
-      } else {
-        lastDisplayedEntry = slave.follow(lastDisplayedEntry)
-      }
     }
   }
 
@@ -83,12 +79,28 @@ private object Dice {
 
   def main(args: Array[String]): Unit = {
     Logger.getRootLogger.setLevel(Level.OFF)
-    val dice = new Dice()
-    try {
-      dice.playDice()
-    }
-    finally {
-      dice.close()
+
+    val bookies = 3
+
+    for {
+      ensembleNumber <- 1 to bookies
+      writeQuorumNumber <- 1 to ensembleNumber
+      ackQuorumNumber <- 1 to writeQuorumNumber
+      isSync <- Seq(true, false)
+    } yield {
+      val dice = new Dice(
+        ensembleNumber = ensembleNumber,
+        writeQuorumNumber = writeQuorumNumber,
+        ackQuorumNumber = ackQuorumNumber,
+        isSync = isSync,
+        from = 1000,
+        to = 1020)
+      try {
+        dice.playDice()
+      }
+      finally {
+        dice.close()
+      }
     }
   }
 }

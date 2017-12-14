@@ -1,10 +1,10 @@
 package client.slave
 
+import client.Utils._
+import client.{EntryId, LeaderElectionMember}
 import org.apache.bookkeeper.client.BookKeeper
 import org.apache.curator.framework.CuratorFramework
 import org.apache.zookeeper.KeeperException
-import client.{EntryId, LeaderElectionMember}
-import client.Utils._
 
 import scala.annotation.tailrec
 
@@ -12,23 +12,21 @@ class Slave(client: CuratorFramework,
             bookKeeper: BookKeeper,
             slave: LeaderElectionMember,
             ledgerLogPath: String,
-            password: Array[Byte]
-           )
-{
+            password: Array[Byte],
+            silent: Boolean = false) {
 
   def follow(skipPast: EntryId): EntryId = {
     val ledgers =
       retrieveLedgersUntilNodeDoesntExist(skipPast)
     val lastLedgerAndItsLastRecordSeen =
-      retrieveUpcomingLedgers(ledgers,  skipPast)
+      retrieveUpcomingLedgers(ledgers, skipPast)
 
     lastLedgerAndItsLastRecordSeen
   }
 
 
   @tailrec
-  private final def retrieveLedgersUntilNodeDoesntExist(lastLedgerAndItsLastRecordSeen: EntryId): Array[Long] =
-  {
+  private final def retrieveLedgersUntilNodeDoesntExist(lastLedgerAndItsLastRecordSeen: EntryId): Array[Long] = {
     scala.util.Try {
       val ledgerIDsBinary = client.getData
         .forPath(ledgerLogPath)
@@ -85,12 +83,13 @@ class Slave(client: CuratorFramework,
         while (entries.hasMoreElements) {
           val entry = entries.nextElement()
           val entryData = entry.getEntry
-          println(
-            s"Ledger = ${ledgerHandle.getId}, " +
-              s"RecordID = ${entry.getEntryId}, " +
-              s"Value = ${bytesToIntsArray(entryData).head}, " +
-              "following"
-          )
+          if (!silent) {
+            println(
+              s"Ledger = ${ledgerHandle.getId}, " +
+                s"RecordID = ${entry.getEntryId}, " +
+                s"Value = ${bytesToIntsArray(entryData).head}, " +
+                "following")
+          }
           updatedLastLedgerAndItsLastRecordSeen = EntryId(ledger, entry.getEntryId)
         }
       }
@@ -103,7 +102,6 @@ class Slave(client: CuratorFramework,
       )
     }
   }
-
 
 
   private final def readUntilWeAreSlave(ledgers: Array[Long],
@@ -128,7 +126,6 @@ class Slave(client: CuratorFramework,
         .forPath(ledgerLogPath)
 
       val newLedgers = bytesToLongsArray(ledgersIDsBinary)
-
 
 
       val upcomingLedgers = {

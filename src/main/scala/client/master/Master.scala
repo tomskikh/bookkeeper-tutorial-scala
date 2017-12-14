@@ -1,12 +1,15 @@
 package client.master
 
+import java.util.concurrent.atomic.{AtomicBoolean, AtomicInteger}
+
 import client.Utils._
 import client.{EntryId, LeaderElectionMember}
 import org.apache.bookkeeper.client.BookKeeper.DigestType
-import org.apache.bookkeeper.client.{BKException, BookKeeper, LedgerHandle}
+import org.apache.bookkeeper.client.{AsyncCallback, BKException, BookKeeper, LedgerHandle}
 import org.apache.curator.framework.CuratorFramework
 import org.apache.zookeeper.KeeperException
 import org.apache.zookeeper.data.Stat
+import tracer.Tracer
 
 import scala.annotation.tailrec
 
@@ -14,10 +17,29 @@ class Master(client: CuratorFramework,
              bookKeeper: BookKeeper,
              master: LeaderElectionMember,
              ledgerLogPath: String,
-             password: Array[Byte]) {
-  private val ensembleNumber = 3
-  private val writeQuorumNumber = 3
-  private val ackQuorumNumber = 2
+             password: Array[Byte],
+             ensembleNumber: Int,
+             writeQuorumNumber: Int,
+             ackQuorumNumber: Int,
+             isSync: Boolean,
+             from: Int = 1000,
+             to: Int = 1020) {
+
+  private var sentEntries = 0
+  private val callbackCalls = new AtomicInteger(0)
+  private val rootName = Seq(
+    "bk",
+    if (isSync) "sync" else "async",
+    ensembleNumber,
+    writeQuorumNumber,
+    ackQuorumNumber,
+    from,
+    to).mkString("-")
+  println(rootName)
+  private val tracer = new Tracer("localhost:9411", "bookkeeper", rootName)
+  private val addEntryTracingName = "addEntry"
+  private val asyncAddEntryTracingName = "asyncAddEntry"
+  val isDone = new AtomicBoolean(false)
 
   def lead(skipPast: EntryId): EntryId = {
     val ledgerMetadata = retrieveLedgers
@@ -141,13 +163,7 @@ class Master(client: CuratorFramework,
           var newLastDisplayedEntry = lastDisplayedEntry
           while (entries.hasMoreElements) {
             val entry = entries.nextElement
-            val entryData = entry.getEntry
-            println(s"" +
-              s"Ledger = ${ledgeHandle.getId}, " +
-              s"RecordID = ${entry.getEntryId}, " +
-              s"Value = ${bytesToIntsArray(entryData).head}, " +
-              "catchup"
-            )
+            entry.getEntry
             newLastDisplayedEntry = EntryId(ledgeHandle.getId, entry.getEntryId)
           }
           traverseLedgersRecords(handles, nextEntry, newLastDisplayedEntry)
@@ -200,7 +216,7 @@ class Master(client: CuratorFramework,
   private final def whileLeaderDo(ledgerHandle: LedgerHandle,
                                   onBeingLeaderDo: LedgerHandle => Unit) = {
     try {
-      while (master.hasLeadership) {
+      while (master.hasLeadership && !isDone.get()) {
         onBeingLeaderDo(ledgerHandle)
       }
     } finally {
@@ -208,19 +224,54 @@ class Master(client: CuratorFramework,
     }
   }
 
-  private val rand = scala.util.Random
 
-  private def onBeingLeaderDo(ledgerHandle: LedgerHandle) = {
-    Thread.sleep(1000)
-    val nextInt = rand.nextInt(6) + 1
-    val recordID = ledgerHandle.addEntry(
-      java.nio.ByteBuffer.allocate(4).putInt(nextInt).array()
-    )
-    println(
-      s"Ledger = ${ledgerHandle.getId}, " +
-        s"RecordID = $recordID, " +
-        s"Value = $nextInt, " +
-        s"isLeader = ${master.hasLeadership}"
-    )
+  private class Callback(name: String, trace: Boolean) extends AsyncCallback.AddCallback {
+    override def addComplete(recordID: Int, ledgerHandle: LedgerHandle, l: Long, o: scala.Any): Unit = {
+      if (trace) tracer.finish(name)
+      callbackCalls.incrementAndGet()
+    }
   }
+
+  private val dataSize = 100
+  private val data = (1 to dataSize).map(_.toByte).toArray
+
+  private val sync: LedgerHandle => Unit = (ledgerHandle: LedgerHandle) => {
+    if (sentEntries < to) {
+      val name = s"$addEntryTracingName-$sentEntries"
+      if (sentEntries >= from) tracer.start(name)
+      ledgerHandle.addEntry(data)
+      if (sentEntries >= from) tracer.finish(name)
+    }
+    else if (sentEntries == to) {
+      tracer.close()
+      isDone.set(true)
+    }
+    else Thread.sleep(1000)
+
+    sentEntries += 1
+  }
+
+
+  private val async: LedgerHandle => Unit = (ledgerHandle: LedgerHandle) => {
+    if (sentEntries < to) {
+      val name = s"$asyncAddEntryTracingName-$sentEntries"
+      val cb = new Callback(name, sentEntries >= from)
+      if (sentEntries >= from) tracer.start(name)
+      ledgerHandle.asyncAddEntry(data, cb, data)
+    } else {
+      callbackCalls.get match {
+        case `to` =>
+          tracer.close()
+          callbackCalls.incrementAndGet()
+          isDone.set(true)
+        case i if i > to => Thread.sleep(1000)
+        case _ =>
+      }
+    }
+
+    sentEntries += 1
+  }
+
+
+  private val onBeingLeaderDo: LedgerHandle => Unit = if (isSync) sync else async
 }
